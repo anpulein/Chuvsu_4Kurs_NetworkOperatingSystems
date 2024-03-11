@@ -1,0 +1,66 @@
+//
+// Created by Dmitry Galkin on 05.03.2024.
+//
+// client_writer.c - код клиента писателя
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define SERVER_PORT 8080
+#define SERVER_IP "127.0.0.1" // Используйте IP-адрес сервера
+#define BUF_SIZE 1024
+
+int main() {
+    struct sockaddr_in serv_addr;
+    int sock = 0;
+    char buffer[BUF_SIZE] = {0};
+    char *writer_message = "Writer request";
+
+    // Создание сокета
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        printf("\n Socket creation error \n");
+        return -1;
+    }
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(SERVER_PORT);
+
+    // Конвертация IPv4 и IPv6 адресов из текста в двоичный формат
+    if(inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
+        printf("\nInvalid address/ Address not supported \n");
+        return -1;
+    }
+
+    // Подключение к серверу
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        printf("\nConnection Failed \n");
+        return -1;
+    }
+
+    // // Отправка сообщения
+    // send(sock, writer_message, strlen(writer_message), 0);
+    // printf("Writer message sent\n");
+    //
+    // // Получение ответа от сервера
+    // read(sock, buffer, BUF_SIZE);
+    // printf("Server's response: %s\n", buffer);
+
+    // // Отправка сообщения
+    // send(sock, reader_message, strlen(reader_message), 0);
+    // printf("Reader message sent\n");
+
+    // Получение ответа от сервера
+    int bytes_received = read(sock, buffer, BUF_SIZE);
+    if(bytes_received > 0) {
+        printf("Server's response: %s\n", buffer);
+    } else {
+        printf("No response from server or connection closed\n");
+    }
+
+    close(sock);
+    return 0;
+}

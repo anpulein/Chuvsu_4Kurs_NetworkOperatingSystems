@@ -1,0 +1,82 @@
+//
+// Created by Dmitry Galkin on 05.03.2024.
+//
+// client_reader.c - код клиента читателя
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define SERVER_PORT 8080
+#define SERVER_IP "127.0.0.1" // Используйте IP-адрес сервера
+#define BUF_SIZE 1024
+
+pthread_mutex_t write_mutex;
+pthread_mutex_t read_mutex;
+pthread_mutex_t priority_mutex;
+pthread_cond_t write_priority;
+pthread_cond_t read_priority;
+
+void init_server_resources() {
+    pthread_mutex_init(&write_mutex, NULL);
+    pthread_mutex_init(&read_mutex, NULL);
+    pthread_mutex_init(&priority_mutex, NULL);
+    pthread_cond_init(&write_priority, NULL);
+    pthread_cond_init(&read_priority, NULL);
+}
+
+void destroy_server_resources() {
+    pthread_mutex_destroy(&write_mutex);
+    pthread_mutex_destroy(&read_mutex);
+    pthread_mutex_destroy(&priority_mutex);
+    pthread_cond_destroy(&write_priority);
+    pthread_cond_destroy(&read_priority);
+}
+
+void *reader_thread(int index);
+
+int main() {
+    struct sockaddr_in serv_addr;
+    int sock = 0;
+    char buffer[BUF_SIZE] = {0};
+
+    char *reader_message = "Reader request";
+
+    // Создание сокета
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        printf("\n Socket creation error \n");
+        return -1;
+    }
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(SERVER_PORT);
+
+    // Конвертация IPv4 и IPv6 адресов из текста в двоичный формат
+    if(inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
+        printf("\nInvalid address/ Address not supported \n");
+        return -1;
+    }
+
+    // Подключение к серверу
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        printf("\nConnection Failed \n");
+        return -1;
+    }
+
+    // Отправка сообщения
+    send(sock, reader_message, strlen(reader_message), 0);
+    printf("Reader message sent\n");
+
+    // Получение ответа от сервера
+    read(sock, buffer, BUF_SIZE);
+    printf("Server's response: %s\n", buffer);
+
+
+    close(sock);
+
+    return 0;
+}

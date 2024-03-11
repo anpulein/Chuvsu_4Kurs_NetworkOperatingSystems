@@ -1,0 +1,208 @@
+//
+// Created by Dmitry Galkin on 05.03.2024.
+//
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include "server.h"
+
+#include <string.h>
+#include <arpa/inet.h>
+
+#define PORT 8080
+#define BUF_SIZE 1024
+#define NUM_READERS 5
+#define NUM_WRITERS 5
+
+pthread_mutex_t write_mutex;
+pthread_mutex_t read_mutex;
+pthread_mutex_t priority_mutex;
+pthread_cond_t write_priority;
+pthread_cond_t read_priority;
+
+void init_server_resources() {
+    pthread_mutex_init(&write_mutex, NULL);
+    pthread_mutex_init(&read_mutex, NULL);
+    pthread_mutex_init(&priority_mutex, NULL);
+    pthread_cond_init(&write_priority, NULL);
+    pthread_cond_init(&read_priority, NULL);
+}
+
+void destroy_server_resources() {
+    pthread_mutex_destroy(&write_mutex);
+    pthread_mutex_destroy(&read_mutex);
+    pthread_mutex_destroy(&priority_mutex);
+    pthread_cond_destroy(&write_priority);
+    pthread_cond_destroy(&read_priority);
+}
+
+void *reader_thread(int index);
+void *writer_thread(int index);
+
+int main() {
+
+    setbuf(stdout, 0);
+    init_server_resources();
+
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    pthread_t tid;
+
+    // Создание дескриптора файла сокета
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Привязка сокета к порту 8080
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEADDR");
+        exit(EXIT_FAILURE);
+    }
+
+#ifdef SO_REUSEPORT
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEPORT");
+        exit(EXIT_FAILURE);
+    }
+#endif
+
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Server is running and waiting for connections on port %d...\n", PORT);
+    fflush(stdout);  // Убедитесь, что сообщение немедленно выводится в консоль.
+
+    // Цикл для приема клиентских подключений
+    while(1) {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
+            perror("accept");
+            exit(EXIT_FAILURE);
+        }
+        pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)new_socket);
+    }
+
+    destroy_server_resources();
+    return 0;
+}
+
+void *handle_client(void *arg) {
+
+    int sock = (intptr_t)arg;
+    char buffer[BUF_SIZE] = {0};
+    int read_val;
+
+    while ((read_val = read(sock, buffer, BUF_SIZE)) > 0) {
+        // Проверка, является ли клиент читателем или писателем
+        if (strcmp(buffer, "Reader request") == 0) {
+            // Логика для обработки запроса читателя
+            reader_thread(sock);
+        } else if (strcmp(buffer, "Writer request") == 0) {
+            // Логика для обработки запроса писателя
+            // printf("Writer connected.\n");
+            writer_thread(sock);
+        }
+
+        memset(buffer, 0, BUF_SIZE);  // Очистка буфера после каждого запроса
+    }
+
+    if(read_val == 0) {
+        printf("Client disconnected\n");
+    } else {
+        perror("recv failed");
+    }
+
+    // Освобождение памяти и закрытие сокета должны быть тут, если потоки уже не используют эту информацию
+    close(sock);
+    return NULL;
+}
+
+void *reader_thread(int index) {
+
+    while (1) {
+        pthread_mutex_lock(&priority_mutex);
+        while (write_count > 0 || (num_writers_waiting > 0 && read_count >= patience_threshold_read)) {
+            pthread_cond_wait(&read_priority, &priority_mutex);
+        }
+        read_count++;
+        pthread_mutex_unlock(&priority_mutex);
+
+        pthread_mutex_lock(&read_mutex);
+        num_readers++;
+        if (num_readers == 1) {
+            pthread_mutex_lock(&write_mutex);
+        }
+        pthread_mutex_unlock(&read_mutex);
+
+        // Чтение
+        printf("[READER] --> Читатель %d читает в библиотеке\n", index);
+        usleep(rand() % 1000000);
+        printf("[READER] --> Читатель %d прочитал книгу в библиотеке\n", index);
+
+        pthread_mutex_lock(&read_mutex);
+        num_readers--;
+        if (num_readers == 0) {
+            pthread_mutex_unlock(&write_mutex);
+        }
+        pthread_mutex_unlock(&read_mutex);
+
+        pthread_mutex_lock(&priority_mutex);
+        read_count--;
+        if (num_writers_waiting > 0 && read_count < patience_threshold_read) {
+            pthread_cond_signal(&write_priority);
+        }
+        pthread_mutex_unlock(&priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+void *writer_thread(int index) {
+    while (1) {
+        pthread_mutex_lock(&priority_mutex);
+        num_writers_waiting++;
+        while (num_readers > 0 || write_count > 0) {
+            pthread_cond_wait(&write_priority, &priority_mutex);
+        }
+        num_writers_waiting--;
+        write_count++;
+        pthread_mutex_unlock(&priority_mutex);
+
+        pthread_mutex_lock(&write_mutex);
+        // Запись
+        printf("[WRITER] --> Писатель %d пишет в библиотеке\n", index);
+        usleep(rand() % 3000000);
+        printf("[WRITER] --> Писатель %d закончил писать в библиотеке\n", index);
+        pthread_mutex_unlock(&write_mutex);
+
+        pthread_mutex_lock(&priority_mutex);
+        write_count--;
+        if (write_count == 0) {
+            if (num_writers_waiting > 0 && read_count >= patience_threshold_read) {
+                pthread_cond_signal(&write_priority);
+            } else {
+                pthread_cond_broadcast(&read_priority);
+            }
+        }
+        pthread_mutex_unlock(&priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}

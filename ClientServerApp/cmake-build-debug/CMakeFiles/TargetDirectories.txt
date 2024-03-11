@@ -1,0 +1,3 @@
+/Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/cmake-build-debug/CMakeFiles/ClientServerApp.dir
+/Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/cmake-build-debug/CMakeFiles/rebuild_cache.dir
