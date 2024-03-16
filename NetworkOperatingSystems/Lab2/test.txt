@@ -1,0 +1,878 @@
+//
+// Created by Dmitry Galkin on 17.02.2024.
+//
+
+#include "model_process.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <string.h>
+
+// Объявления для разделяемой памяти
+struct SharedMemory {
+    int num_readers;
+    int num_writers_waiting;
+    int read_count;
+    int write_count;
+};
+
+// Инициализация именованных семафоров
+sem_t *write_mutex;
+sem_t *read_mutex;
+sem_t *priority_mutex;
+sem_t *write_priority;
+sem_t *read_priority;
+
+struct SharedMemory *shm;
+
+void *reader_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        while (shm->write_count > 0 || (shm->num_writers_waiting > 0 && shm->read_count >= 3)) {
+            sem_post(priority_mutex);
+            sem_wait(read_priority);
+            sem_wait(priority_mutex);
+        }
+        shm->read_count++;
+        if (shm->read_count == 1) {
+            sem_wait(write_mutex);
+        }
+        sem_post(priority_mutex);
+
+        // Чтение
+        printf("Читатель %d читает в библиотеке\n", arg);
+        usleep(rand() % 1000000);
+        printf("---> Читатель %d прочитал книгу в библиотеке\n", arg);
+
+        sem_wait(priority_mutex);
+        shm->read_count--;
+        if (shm->read_count == 0) {
+            sem_post(write_mutex);
+        }
+        if (shm->num_writers_waiting > 0 && shm->read_count < 3) {
+            sem_post(write_priority);
+        } else {
+            sem_post(read_priority); // Позволяет другим читателям продолжить
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+
+void *writer_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        shm->num_writers_waiting++;
+        sem_post(priority_mutex);
+
+        sem_wait(write_priority);
+
+        sem_wait(priority_mutex);
+        shm->num_writers_waiting--;
+        shm->write_count++;
+        sem_post(priority_mutex);
+
+        // Запись
+        printf("Писатель %d пишет в библиотеке\n", arg);
+        usleep(rand() % 3000000);
+        printf("---> Писатель %d закончил писать в библиотеке\n", arg);
+
+        sem_wait(priority_mutex);
+        shm->write_count--;
+        if (shm->write_count == 0 && shm->num_writers_waiting > 0) {
+            sem_post(write_priority);
+        } else if (shm->write_count == 0) {
+            for (int i = 0; i < 3; i++) { // Разрешаем максимум трём читателям
+                sem_post(read_priority);
+            }
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}
+
+
+void start_process() {
+    // Создание разделяемой памяти
+    int shm_fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(struct SharedMemory));
+    shm = mmap(0, sizeof(struct SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    // Инициализация семафоров
+    write_mutex = sem_open("/write_mutex", O_CREAT, 0644, 1);
+    read_mutex = sem_open("/read_mutex", O_CREAT, 0644, 1);
+    priority_mutex = sem_open("/priority_mutex", O_CREAT, 0644, 1);
+    write_priority = sem_open("/write_priority", O_CREAT, 0644, 0);
+    read_priority = sem_open("/read_priority", O_CREAT, 0644, 0);
+
+    // Инициализация разделяемой памяти
+    shm->num_readers = 0;
+    shm->num_writers_waiting = 0;
+    shm->read_count = 0;
+    shm->write_count = 0;
+
+    pid_t pid;
+    char queues[] = "rrwwrrrrrrrrrrwwwwrrrrwwwwrrrrwwwwrrrrwwwwrrrrwww";
+    int queues_length = strlen(queues);
+
+    for (int i = 0; i < queues_length; i++) {
+        pid = fork();
+        if (pid == 0) { // Child process
+            if (queues[i] == 'r') {
+                reader_process(i);
+            } else {
+                writer_process(i);
+            }
+            exit(0); // Завершение дочернего процесса
+        }
+    }
+
+    for (int i = 0; i < queues_length; i++) {
+        wait(NULL); // Ожидание завершения всех дочерних процессов
+    }
+
+    // Очистка
+    sem_close(write_mutex);
+    sem_close(read_mutex);
+    sem_close(priority_mutex);
+    sem_close(write_priority);
+    sem_close(read_priority);
+    sem_unlink("/write_mutex");
+    sem_unlink("/read_mutex");
+    sem_unlink("/priority_mutex");
+    sem_unlink("/write_priority");
+    sem_unlink("/read_priority");
+    munmap(shm, sizeof(struct SharedMemory));
+    shm_unlink("/my_shm");
+}
+
+
+//// ВАРИАНТ 2 (более менее рабочий)
+//
+// Created by Dmitry Galkin on 17.02.2024.
+//
+
+#include "model_process.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <string.h>
+
+// Объявления для разделяемой памяти
+struct SharedMemory {
+    int num_readers;
+    int num_writers_waiting;
+    int read_count;
+    int write_count;
+    int patience_threshold_read;
+    int patience_threshold_write;
+};
+
+// Инициализация именованных семафоров
+sem_t *write_mutex;
+sem_t *read_mutex;
+sem_t *priority_mutex;
+sem_t *write_priority;
+sem_t *read_priority;
+
+struct SharedMemory *shm;
+
+void *reader_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        while (shm->write_count > 0 || (shm->num_writers_waiting > 0 && shm->read_count >= shm->patience_threshold_read)) {
+            sem_post(priority_mutex);
+            sem_wait(read_priority);
+            sem_wait(priority_mutex);
+        }
+        shm->read_count++;
+        if (shm->read_count == 1) {
+            sem_wait(write_mutex);
+        }
+        sem_post(priority_mutex);
+
+        // Чтение
+        printf("[REAR] -> Читатель %d читает в библиотеке\n", arg);
+        usleep(rand() % 1000000);
+        printf("[READ] -> Читатель %d прочитал книгу в библиотеке\n", arg);
+
+        sem_wait(priority_mutex);
+        shm->read_count--;
+        if (shm->read_count == 0) {
+            sem_post(write_mutex);
+        }
+        if (shm->num_writers_waiting > 0 && shm->read_count < shm->patience_threshold_read) {
+            sem_post(write_priority);
+        } else {
+            sem_post(read_priority); // Позволяет другим читателям продолжить
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+
+void *writer_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        shm->num_writers_waiting++;
+        while (shm->write_count > 0 || shm->write_count > 0) {
+            sem_post(priority_mutex);
+            sem_wait(write_priority);
+            sem_wait(priority_mutex);
+        }
+        sem_post(priority_mutex);
+
+        sem_wait(write_priority);
+
+        sem_wait(priority_mutex);
+        shm->num_writers_waiting--;
+        shm->write_count++;
+        sem_post(priority_mutex);
+
+        // Запись
+        printf("[WRITE] -> Писатель %d пишет в библиотеке\n", arg);
+        usleep(rand() % 3000000);
+        printf("[WRITE] -> Писатель %d закончил писать в библиотеке\n", arg);
+
+        sem_wait(priority_mutex);
+        shm->write_count--;
+        if (shm->write_count == 0 && shm->num_writers_waiting > 0 && shm->read_count >= shm->patience_threshold_read) {
+            sem_post(write_priority);
+        } else if (shm->write_count == 0) {
+            for (int i = 0; i < 3; i++) { // Разрешаем максимум трём читателям
+                sem_post(read_priority);
+            }
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}
+
+
+void start_process() {
+    // Создание разделяемой памяти
+    int shm_fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(struct SharedMemory));
+    shm = mmap(0, sizeof(struct SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    // Инициализация семафоров
+    write_mutex = sem_open("/write_mutex", O_CREAT, 0644, 1);
+    read_mutex = sem_open("/read_mutex", O_CREAT, 0644, 1);
+    priority_mutex = sem_open("/priority_mutex", O_CREAT, 0644, 1);
+    write_priority = sem_open("/write_priority", O_CREAT, 0644, 0);
+    read_priority = sem_open("/read_priority", O_CREAT, 0644, 0);
+
+    // Инициализация разделяемой памяти
+    shm->num_readers = 0;
+    shm->num_writers_waiting = 0;
+    shm->read_count = 0;
+    shm->write_count = 0;
+    shm->patience_threshold_read = 3;
+    shm->patience_threshold_write = 10;
+
+    pid_t pid;
+    char queues[] = "rrwwrrrrrrrrrrwwwwrrrrwwwwrrrrwwwwrrrrwwwwrrrrwww";
+    int queues_length = strlen(queues);
+
+    for (int i = 0; i < queues_length; i++) {
+        pid = fork();
+        if (pid == 0) { // Child process
+            if (queues[i] == 'r') {
+                reader_process(i);
+            } else {
+                writer_process(i);
+            }
+            exit(0); // Завершение дочернего процесса
+        }
+    }
+
+    for (int i = 0; i < queues_length; i++) {
+        wait(NULL); // Ожидание завершения всех дочерних процессов
+    }
+
+    // Очистка
+    sem_close(write_mutex);
+    sem_close(read_mutex);
+    sem_close(priority_mutex);
+    sem_close(write_priority);
+    sem_close(read_priority);
+    sem_unlink("/write_mutex");
+    sem_unlink("/read_mutex");
+    sem_unlink("/priority_mutex");
+    sem_unlink("/write_priority");
+    sem_unlink("/read_priority");
+    munmap(shm, sizeof(struct SharedMemory));
+    shm_unlink("/my_shm");
+}
+
+
+
+
+///// Вариант 3 (Вроде как рабочий )
+#include "model_process.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <string.h>
+
+// Объявления для разделяемой памяти
+struct SharedMemory {
+    int num_readers;
+    int num_writers_waiting;
+    int read_count;
+    int write_count;
+    int patience_threshold_read;
+    int patience_threshold_write;
+};
+
+// Инициализация именованных семафоров
+sem_t *write_mutex;
+sem_t *read_mutex;
+sem_t *priority_mutex;
+sem_t *write_priority;
+sem_t *read_priority;
+
+struct SharedMemory *shm;
+
+void *reader_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        while (shm->write_count > 0 || (shm->num_writers_waiting > 0 && shm->read_count >= shm->patience_threshold_read)) {
+            sem_post(priority_mutex);
+            sem_wait(read_priority);
+            sem_wait(priority_mutex);
+        }
+        shm->read_count++;
+        sem_post(priority_mutex);
+
+        sem_wait(read_mutex);
+        shm->num_readers++;
+        if (shm->num_readers == 1) {
+            sem_wait(write_mutex);
+        }
+        sem_post(read_mutex);
+
+        // Чтение
+        printf("[READ] -> Читатель %d читает в библиотеке\n", arg);
+        usleep(rand() % 1000000);
+        printf("[READ] -> Читатель %d прочитал книгу в библиотеке\n", arg);
+
+        sem_wait(read_mutex);
+        shm->num_readers--;
+        if (shm->num_readers == 0) {
+            sem_post(write_mutex);
+        }
+        sem_post(read_mutex);
+
+        sem_wait(priority_mutex);
+        shm->read_count--;
+        // if (shm->read_count == 0) {
+        //     sem_post(write_mutex);
+        // }
+        if (shm->num_writers_waiting > 0 && shm->read_count < shm->patience_threshold_write) {
+            sem_post(write_priority);
+        } else {
+            sem_post(read_priority); // Позволяет другим читателям продолжить
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+
+void *writer_process(int arg) {
+    while (1) {
+        sem_wait(priority_mutex);
+        shm->num_writers_waiting++;
+        while (shm->num_readers > 0 || shm->write_count > 0) {
+            sem_post(priority_mutex);
+            sem_wait(write_priority);
+            sem_wait(priority_mutex);
+        }
+        shm->num_writers_waiting--;
+        shm->write_count++;
+        sem_post(priority_mutex);
+
+        sem_wait(write_mutex);
+
+        // sem_wait(priority_mutex);
+        // shm->num_writers_waiting--;
+        // shm->write_count++;
+        // sem_post(priority_mutex);
+
+        // Запись
+        printf("[WRITE] -> Писатель %d пишет в библиотеке\n", arg);
+        usleep(rand() % 3000000);
+        printf("[WRITE] -> Писатель %d закончил писать в библиотеке\n", arg);
+        sem_post(write_mutex);
+
+        sem_wait(priority_mutex);
+        shm->write_count--;
+        if (shm->write_count == 0 && shm->num_writers_waiting > 0 && shm->read_count >= shm->patience_threshold_read) {
+            sem_post(write_priority);
+        } else if (shm->write_count == 0) {
+            for (int i = 0; i < shm->patience_threshold_write; i++) { // Разрешаем максимум трём читателям
+                sem_post(read_priority);
+            }
+        }
+        sem_post(priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}
+
+
+void start_process() {
+    // Создание разделяемой памяти
+    int shm_fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(struct SharedMemory));
+    shm = mmap(0, sizeof(struct SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    // Инициализация семафоров
+    write_mutex = sem_open("/write_mutex", O_CREAT, 0644, 1);
+    read_mutex = sem_open("/read_mutex", O_CREAT, 0644, 1);
+    priority_mutex = sem_open("/priority_mutex", O_CREAT, 0644, 1);
+    write_priority = sem_open("/write_priority", O_CREAT, 0644, 0);
+    read_priority = sem_open("/read_priority", O_CREAT, 0644, 0);
+
+    // Инициализация разделяемой памяти
+    shm->num_readers = 0;
+    shm->num_writers_waiting = 0;
+    shm->read_count = 0;
+    shm->write_count = 0;
+    shm->patience_threshold_read = 3;
+    shm->patience_threshold_write = 5;
+
+    pid_t pid;
+    char queues[] = "rrwwrrrrrrrrrrwwwwrrrrwwwwrrrrwwwwrrrrwwwwrrrrwww";
+    int queues_length = strlen(queues);
+
+    for (int i = 0; i < queues_length; i++) {
+        pid = fork();
+        if (pid > 0) { // Child process
+            if (queues[i] == 'r') {
+                reader_process(i);
+            } else {
+                writer_process(i);
+            }
+            exit(0); // Завершение дочернего процесса
+        }
+    }
+
+    for (int i = 0; i < queues_length; i++) {
+        wait(NULL); // Ожидание завершения всех дочерних процессов
+    }
+
+    // Очистка
+    sem_close(write_mutex);
+    sem_close(read_mutex);
+    sem_close(priority_mutex);
+    sem_close(write_priority);
+    sem_close(read_priority);
+    sem_unlink("/write_mutex");
+    sem_unlink("/read_mutex");
+    sem_unlink("/priority_mutex");
+    sem_unlink("/write_priority");
+    sem_unlink("/read_priority");
+    munmap(shm, sizeof(struct SharedMemory));
+    shm_unlink("/my_shm");
+}
+
+
+
+
+///// Прям готовый
+#include "model_process.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <string.h>
+
+
+// Объявления для разделяемой памяти
+struct SharedMemory {
+    int num_readers;
+    int num_writers_waiting;
+    int read_count;
+    int write_count;
+    // int patience_threshold_read;
+    // int patience_threshold_write;
+
+    sem_t *write_mutex;
+    sem_t *read_mutex;
+    sem_t *priority_mutex;
+    sem_t *write_priority;
+    sem_t *read_priority;
+};
+
+int PATIENCE_THRESHOLD_READ = 3;
+int PATIENCE_THRESHOLD_WRITE = 5;
+
+// Инициализация именованных семафоров
+sem_t *write_mutex;
+sem_t *read_mutex;
+sem_t *priority_mutex;
+sem_t *write_priority;
+sem_t *read_priority;
+
+struct SharedMemory *shm;
+
+void *reader_process(int arg) {
+    while (1) {
+        sem_wait(shm->priority_mutex);
+        while (shm->write_count > 0 || (shm->num_writers_waiting > 0 && shm->read_count >= PATIENCE_THRESHOLD_READ)) {
+            sem_post(shm->priority_mutex);
+            sem_wait(shm->read_priority);
+            sem_wait(shm->priority_mutex);
+        }
+        shm->read_count++;
+        sem_post(shm->priority_mutex);
+
+        sem_wait(shm->read_mutex);
+        shm->num_readers++;
+        if (shm->num_readers == 1) {
+            sem_wait(shm->write_mutex);
+        }
+        sem_post(shm->read_mutex);
+
+        // Чтение
+        printf("[READ] -> Читатель %d читает в библиотеке\n", arg);
+        usleep(rand() % 1000000);
+        printf("[READ] -> Читатель %d прочитал книгу в библиотеке\n", arg);
+
+        sem_wait(shm->read_mutex);
+        shm->num_readers--;
+        if (shm->num_readers == 0) {
+            sem_post(shm->write_mutex);
+        }
+        sem_post(shm->read_mutex);
+
+        sem_wait(shm->priority_mutex);
+        shm->read_count--;
+        // if (shm->read_count == 0) {
+        //     sem_post(write_mutex);
+        // }
+        if (shm->num_writers_waiting > 0 && shm->read_count < PATIENCE_THRESHOLD_WRITE) {
+            sem_post(shm->write_priority);
+        } else {
+            sem_post(shm->read_priority); // Позволяет другим читателям продолжить
+        }
+        sem_post(shm->priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+
+void *writer_process(int arg) {
+    while (1) {
+        sem_wait(shm->priority_mutex);
+        shm->num_writers_waiting++;
+        while (shm->num_readers > 0 || shm->write_count > 0) {
+            sem_post(shm->priority_mutex);
+            sem_wait(shm->write_priority);
+            sem_wait(shm->priority_mutex);
+        }
+        shm->num_writers_waiting--;
+        shm->write_count++;
+        sem_post(shm->priority_mutex);
+
+        sem_wait(shm->write_mutex);
+
+        // sem_wait(priority_mutex);
+        // shm->num_writers_waiting--;
+        // shm->write_count++;
+        // sem_post(priority_mutex);
+
+        // Запись
+        printf("[WRITE] -> Писатель %d пишет в библиотеке\n", arg);
+        usleep(rand() % 3000000);
+        printf("[WRITE] -> Писатель %d закончил писать в библиотеке\n", arg);
+        sem_post(shm->write_mutex);
+
+        sem_wait(shm->priority_mutex);
+        shm->write_count--;
+        if (shm->write_count == 0 && shm->num_writers_waiting > 0 && shm->read_count >= PATIENCE_THRESHOLD_READ) {
+            sem_post(shm->write_priority);
+        } else if (shm->write_count == 0) {
+            for (int i = 0; i < PATIENCE_THRESHOLD_WRITE; i++) { // Разрешаем максимум трём читателям
+                sem_post(shm->read_priority);
+            }
+        }
+        sem_post(shm->priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}
+
+
+void start_process() {
+    // Создание разделяемой памяти
+    int shm_fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(struct SharedMemory));
+    shm = mmap(0, sizeof(struct SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    // Инициализация семафоров
+    // write_mutex = sem_open("/write_mutex", O_CREAT, 0644, 1);
+    // read_mutex = sem_open("/read_mutex", O_CREAT, 0644, 1);
+    // priority_mutex = sem_open("/priority_mutex", O_CREAT, 0644, 1);
+    // write_priority = sem_open("/write_priority", O_CREAT, 0644, 0);
+    // read_priority = sem_open("/read_priority", O_CREAT, 0644, 0);
+
+    // sem_init(shm->write_mutex, 1, 1);
+    // sem_init(shm->read_mutex, 1, 1);
+    // sem_init(shm->priority_mutex, 1, 1);
+    // sem_init(shm->write_priority, 1, 0);
+    // sem_init(shm->read_priority, 1, 0);
+
+    // Инициализация разделяемой памяти
+    shm->num_readers = 0;
+    shm->num_writers_waiting = 0;
+    shm->read_count = 0;
+    shm->write_count = 0;
+    // shm->patience_threshold_read = 3;
+    // shm->patience_threshold_write = 5;
+
+    pid_t pid;
+    char queues[] = "wwrrwwrrrrrrrrrrwwwwrrrrwwwwrrrrwwwwrrrrwwwwrrrrwww";
+    int queues_length = strlen(queues);
+
+    for (int i = 0; i < queues_length; i++) {
+        pid = fork();
+        if (pid > 0) { // Child process
+            if (queues[i] == 'r') {
+                reader_process(i);
+            } else {
+                writer_process(i);
+            }
+            exit(0); // Завершение дочернего процесса
+        }
+    }
+
+    for (int i = 0; i < queues_length; i++) {
+        wait(NULL); // Ожидание завершения всех дочерних процессов
+    }
+
+    // Очистка
+    sem_close(write_mutex);
+    sem_close(read_mutex);
+    sem_close(priority_mutex);
+    sem_close(write_priority);
+    sem_close(read_priority);
+    sem_unlink("/write_mutex");
+    sem_unlink("/read_mutex");
+    sem_unlink("/priority_mutex");
+    sem_unlink("/write_priority");
+    sem_unlink("/read_priority");
+    munmap(shm, sizeof(struct SharedMemory));
+    shm_unlink("/my_shm");
+}
+
+
+
+
+
+/////////// тестовый  мьютекс
+#include "model_process.h"
+
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <semaphore.h>
+#include <string.h>
+
+
+// Объявления для разделяемой памяти
+struct SharedMemory {
+    int num_readers;
+    int num_writers_waiting;
+    int read_count;
+    int write_count;
+    // int patience_threshold_read;
+    // int patience_threshold_write;
+
+    pthread_mutex_t write_mutex;
+    pthread_mutex_t read_mutex;
+    pthread_mutex_t priority_mutex;
+    pthread_cond_t write_priority;
+    pthread_cond_t read_priority;
+};
+
+int PATIENCE_THRESHOLD_READ = 3;
+int PATIENCE_THRESHOLD_WRITE = 5;
+
+// Инициализация именованных семафоров
+sem_t *write_mutex;
+sem_t *read_mutex;
+sem_t *priority_mutex;
+sem_t *write_priority;
+sem_t *read_priority;
+
+struct SharedMemory *shm;
+
+
+void *reader_thread(void *arg) {
+    while (1) {
+        pthread_mutex_lock(&shm->priority_mutex);
+        while (shm->write_count > 0 || (shm->num_writers_waiting > 0 && shm->read_count >= PATIENCE_THRESHOLD_READ)) {
+            pthread_cond_wait(&shm->read_priority, &shm->priority_mutex);
+        }
+        shm->read_count++;
+        pthread_mutex_unlock(&shm->priority_mutex);
+
+        pthread_mutex_lock(&shm->read_mutex);
+        shm->num_readers++;
+        if (shm->num_readers == 1) {
+            pthread_mutex_lock(&shm->write_mutex);
+        }
+        pthread_mutex_unlock(&shm->read_mutex);
+
+        // Чтение
+        printf("Читатель %d читает в библиотеке\n", (int)arg);
+        usleep(rand() % 1000000);
+        printf("---> Читатель %d прочитал книгу в библиотеке\n", (int)arg);
+
+        pthread_mutex_lock(&shm->read_mutex);
+        shm->num_readers--;
+        if (shm->num_readers == 0) {
+            pthread_mutex_unlock(&shm->write_mutex);
+        }
+        pthread_mutex_unlock(&shm->read_mutex);
+
+        pthread_mutex_lock(&shm->priority_mutex);
+        shm->read_count--;
+        if (shm->num_writers_waiting > 0 && shm->read_count < PATIENCE_THRESHOLD_READ) {
+            pthread_cond_signal(&shm->write_priority);
+        }
+        pthread_mutex_unlock(&shm->priority_mutex);
+
+        usleep(rand() % 1000000);
+    }
+}
+
+
+void *writer_thread(void *arg) {
+    while (1) {
+        pthread_mutex_lock(&priority_mutex);
+        num_writers_waiting++;
+        while (num_readers > 0 || write_count > 0) {
+            pthread_cond_wait(&write_priority, &priority_mutex);
+        }
+        num_writers_waiting--;
+        write_count++;
+        pthread_mutex_unlock(&priority_mutex);
+
+        pthread_mutex_lock(&write_mutex);
+        // Запись
+        printf("Писатель %d пишет в библиотеке\n", (int)arg);
+        usleep(rand() % 3000000);
+        printf("---> Писатель %d закончил писать в библиотеке\n", (int)arg);
+        pthread_mutex_unlock(&write_mutex);
+
+        pthread_mutex_lock(&priority_mutex);
+        write_count--;
+        if (shm->write_count == 0 && shm->num_writers_waiting > 0 && shm->read_count >= PATIENCE_THRESHOLD_READ) {
+            pthread_cond_signal(&shm->write_priority);
+        }
+        else if (&shm->write_count == 0) {
+            for (int i = 0; i < PATIENCE_THRESHOLD_WRITE; i++) {
+                pthread_cond_broadcast(&shm->read_priority);
+            }
+        }
+        // if (write_count == 0) {
+        //     if (num_writers_waiting > 0 && read_count >= patience_threshold_read) {
+        //         pthread_cond_signal(&write_priority);
+        //     } else {
+        //         pthread_cond_broadcast(&read_priority);
+        //     }
+        // }
+        pthread_mutex_unlock(&priority_mutex);
+
+        usleep(rand() % 3000000);
+    }
+}
+
+
+void start_process() {
+    // Создание разделяемой памяти
+    int shm_fd = shm_open("/my_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(struct SharedMemory));
+    shm = mmap(0, sizeof(struct SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+    // Инициализация семафоров
+    // write_mutex = sem_open("/write_mutex", O_CREAT, 0644, 1);
+    // read_mutex = sem_open("/read_mutex", O_CREAT, 0644, 1);
+    // priority_mutex = sem_open("/priority_mutex", O_CREAT, 0644, 1);
+    // write_priority = sem_open("/write_priority", O_CREAT, 0644, 0);
+    // read_priority = sem_open("/read_priority", O_CREAT, 0644, 0);
+
+    // sem_init(shm->write_mutex, 1, 1);
+    // sem_init(shm->read_mutex, 1, 1);
+    // sem_init(shm->priority_mutex, 1, 1);
+    // sem_init(shm->write_priority, 1, 0);
+    // sem_init(shm->read_priority, 1, 0);
+
+    // Инициализация разделяемой памяти
+    shm->num_readers = 0;
+    shm->num_writers_waiting = 0;
+    shm->read_count = 0;
+    shm->write_count = 0;
+    // shm->patience_threshold_read = 3;
+    // shm->patience_threshold_write = 5;
+
+    pid_t pid;
+    char queues[] = "wwrrwwrrrrrrrrrrwwwwrrrrwwwwrrrrwwwwrrrrwwwwrrrrwww";
+    int queues_length = strlen(queues);
+
+    for (int i = 0; i < queues_length; i++) {
+        pid = fork();
+        if (pid > 0) { // Child process
+            if (queues[i] == 'r') {
+                reader_process(i);
+            } else {
+                writer_process(i);
+            }
+            exit(0); // Завершение дочернего процесса
+        }
+    }
+
+    for (int i = 0; i < queues_length; i++) {
+        wait(NULL); // Ожидание завершения всех дочерних процессов
+    }
+
+    // Очистка
+    sem_close(write_mutex);
+    sem_close(read_mutex);
+    sem_close(priority_mutex);
+    sem_close(write_priority);
+    sem_close(read_priority);
+    sem_unlink("/write_mutex");
+    sem_unlink("/read_mutex");
+    sem_unlink("/priority_mutex");
+    sem_unlink("/write_priority");
+    sem_unlink("/read_priority");
+    munmap(shm, sizeof(struct SharedMemory));
+    shm_unlink("/my_shm");
+}

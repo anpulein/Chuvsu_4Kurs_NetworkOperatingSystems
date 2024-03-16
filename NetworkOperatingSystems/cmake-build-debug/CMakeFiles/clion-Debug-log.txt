@@ -1,0 +1,4 @@
+"/Users/anpulein/Applications/CLion Nova.app/Contents/bin/cmake/mac/aarch64/bin/cmake" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=/Users/anpulein/Applications/CLion Nova.app/Contents/bin/ninja/mac/aarch64/ninja" -G Ninja -S /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/NetworkOperatingSystems -B /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/NetworkOperatingSystems/cmake-build-debug
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/NetworkOperatingSystems/cmake-build-debug
