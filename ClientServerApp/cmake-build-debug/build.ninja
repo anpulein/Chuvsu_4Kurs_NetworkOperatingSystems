@@ -49,8 +49,8 @@ cmake_ninja_workdir = /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_Net
 
 build cmake_object_order_depends_target_ClientServerApp: phony || CMakeFiles/ClientServerApp.dir
 
-build CMakeFiles/ClientServerApp.dir/src/client_reader.c.o: C_COMPILER__ClientServerApp_unscanned_Debug /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/src/client_reader.c || cmake_object_order_depends_target_ClientServerApp
-  DEP_FILE = CMakeFiles/ClientServerApp.dir/src/client_reader.c.o.d
+build CMakeFiles/ClientServerApp.dir/src/client.c.o: C_COMPILER__ClientServerApp_unscanned_Debug /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/src/client.c || cmake_object_order_depends_target_ClientServerApp
+  DEP_FILE = CMakeFiles/ClientServerApp.dir/src/client.c.o.d
   FLAGS = -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX14.2.sdk -fcolor-diagnostics
   OBJECT_DIR = CMakeFiles/ClientServerApp.dir
   OBJECT_FILE_DIR = CMakeFiles/ClientServerApp.dir/src
@@ -61,8 +61,14 @@ build CMakeFiles/ClientServerApp.dir/src/server.c.o: C_COMPILER__ClientServerApp
   OBJECT_DIR = CMakeFiles/ClientServerApp.dir
   OBJECT_FILE_DIR = CMakeFiles/ClientServerApp.dir/src
 
-build CMakeFiles/ClientServerApp.dir/src/client_writer.c.o: C_COMPILER__ClientServerApp_unscanned_Debug /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/src/client_writer.c || cmake_object_order_depends_target_ClientServerApp
-  DEP_FILE = CMakeFiles/ClientServerApp.dir/src/client_writer.c.o.d
+build CMakeFiles/ClientServerApp.dir/src/client_egor.c.o: C_COMPILER__ClientServerApp_unscanned_Debug /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/src/client_egor.c || cmake_object_order_depends_target_ClientServerApp
+  DEP_FILE = CMakeFiles/ClientServerApp.dir/src/client_egor.c.o.d
+  FLAGS = -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX14.2.sdk -fcolor-diagnostics
+  OBJECT_DIR = CMakeFiles/ClientServerApp.dir
+  OBJECT_FILE_DIR = CMakeFiles/ClientServerApp.dir/src
+
+build CMakeFiles/ClientServerApp.dir/src/client_santek.c.o: C_COMPILER__ClientServerApp_unscanned_Debug /Users/anpulein/Documents/Projects/Chuvsu/Chuvsu_4Kurs_NetworkOperatingSystems/ClientServerApp/src/client_santek.c || cmake_object_order_depends_target_ClientServerApp
+  DEP_FILE = CMakeFiles/ClientServerApp.dir/src/client_santek.c.o.d
   FLAGS = -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX14.2.sdk -fcolor-diagnostics
   OBJECT_DIR = CMakeFiles/ClientServerApp.dir
   OBJECT_FILE_DIR = CMakeFiles/ClientServerApp.dir/src
@@ -75,7 +81,7 @@ build CMakeFiles/ClientServerApp.dir/src/client_writer.c.o: C_COMPILER__ClientSe
 #############################################
 # Link the executable ClientServerApp
 
-build ClientServerApp: C_EXECUTABLE_LINKER__ClientServerApp_Debug CMakeFiles/ClientServerApp.dir/src/client_reader.c.o CMakeFiles/ClientServerApp.dir/src/server.c.o CMakeFiles/ClientServerApp.dir/src/client_writer.c.o
+build ClientServerApp: C_EXECUTABLE_LINKER__ClientServerApp_Debug CMakeFiles/ClientServerApp.dir/src/client.c.o CMakeFiles/ClientServerApp.dir/src/server.c.o CMakeFiles/ClientServerApp.dir/src/client_egor.c.o CMakeFiles/ClientServerApp.dir/src/client_santek.c.o
   FLAGS = -g -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX14.2.sdk
   OBJECT_DIR = CMakeFiles/ClientServerApp.dir
   POST_BUILD = :

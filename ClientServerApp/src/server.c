@@ -14,7 +14,7 @@
 #include <string.h>
 #include <arpa/inet.h>
 
-#define PORT 8888
+#define PORT 9999
 #define BUF_SIZE 1024
 
 
@@ -22,10 +22,15 @@
 // #define NUM_WRITERS 5
 
 struct thread_data {
-    int sock;
     int index;
-    volatile int *active; // Указатель на переменную, контролирующую активность потока
 };
+
+#define MAX_CLIENTS 100  // Максимальное количество клиентов
+int clients[MAX_CLIENTS]; // Массив для хранения сокетов клиентов
+int active_clients = 0;
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t client_count_mutex = PTHREAD_MUTEX_INITIALIZER;
+int client_count = 0;
 
 pthread_mutex_t write_mutex;
 pthread_mutex_t read_mutex;
@@ -49,6 +54,17 @@ void destroy_server_resources() {
     pthread_cond_destroy(&read_priority);
 }
 
+// Функция для отправки сообщения всем клиентам, кроме отправителя
+void broadcast_message(char *message) {
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < active_clients; i++) {
+        if (clients[i] > 0) {  // Проверка, что сокет активен и не является отправителем
+            send(clients[i], message, strlen(message), 0);
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+}
+
 void *reader_thread(void *arg);
 void *writer_thread(void *arg);
 
@@ -66,11 +82,18 @@ int main() {
 
     printf("Server is running and waiting for connections on port %d...\n", PORT);
 
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
     while (1) {
         if ((new_socket = accept(server_fd, NULL, NULL)) < 0) {
             perror("accept");
             continue; // Вместо выхода продолжаем работу сервера
         }
+
+        // Вывод информации о подключившемся клиенте
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+
         pthread_create(&tid, NULL, handle_client, (void *)(intptr_t)new_socket);
     }
 
@@ -102,6 +125,8 @@ int setup_server_socket(int *server_fd) {
         close(*server_fd);
         return -1;
     }
+    // что делает htuns
+    // зачем нужен listen (2 аргумент)
 
     if (listen(*server_fd, 10) < 0) {
         perror("listen");
@@ -113,79 +138,35 @@ int setup_server_socket(int *server_fd) {
 }
 
 
-// void *handle_client(void *arg) {
-//     int sock = (intptr_t)arg;
-//     char buffer[BUF_SIZE] = {0};
-//     int read_val, num_threads;
-//     char *token, *ptr;
-//     volatile int active = 1; // Флаг активности потоков
-//
-//     // Чтение сообщения от клиента
-//     read_val = read(sock, buffer, BUF_SIZE);
-//     if (read_val > 0) {
-//         // Разделение сообщения на токены
-//         token = strtok(buffer, ":");
-//         if (token != NULL) {
-//             ptr = strtok(NULL, ":");
-//             if (ptr != NULL) {
-//                 num_threads = atoi(ptr); // Преобразование строки в число
-//
-//                 printf("[CLIENT] --> Client %s create threads: %d\n", strcmp(token, "Reader") ==0 ? "Reader" : "Writer", num_threads);
-//
-//                 struct thread_data *data;
-//                 pthread_t threads[num_threads];
-//                 for (int i = 0; i < num_threads; i++) {
-//                     data = malloc(sizeof(struct thread_data)); // Выделяем память для данных потока
-//                     data->sock = sock;
-//                     data->index = i;
-//                     // data->active = &active;
-//                     if (strcmp(token, "Reader") == 0) {
-//                         // Создание потоков читателей
-//                         pthread_create(&threads[i], NULL, reader_thread, (void *)data);
-//                     } else if (strcmp(token, "Writer") == 0) {
-//                         // Создание потоков писателей
-//                         pthread_create(&threads[i], NULL, writer_thread, (void *)data);
-//                     }
-//                 }
-//
-//                 // usleep(100000);
-//                 // active = 0;
-//                 for (int i = 0; i < num_threads; i++) {
-//                     pthread_join(threads[i], NULL);
-//                 }
-//
-//                 // Отправляем подтверждение клиенту
-//                 // char *message = "Threads created successfully";
-//                 // send(sock, message, strlen(message), 0);
-//             }
-//         }
-//     } else {
-//         if (read_val == 0) {
-//             printf("Client disconnected\n");
-//         } else {
-//             perror("recv failed");
-//         }
-//     }
-//
-//     close(sock);
-//     return NULL;
-// }
-
 void *handle_client(void *arg) {
     int sock = (intptr_t)arg;
     char buffer[BUF_SIZE] = {0};
-    int read_val, num_threads;
+    int num_threads;
     char *token, *ptr;
-    volatile int active = 1; // Флаг активности потоков
 
-    printf("[CLIENT]");
+    struct sockaddr_in peer_addr;
+    socklen_t peer_addr_len = sizeof(peer_addr);
+    getpeername(sock, (struct sockaddr *)&peer_addr, &peer_addr_len); // Получение информации о клиенте
+
+    char client_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &peer_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+    int client_port = ntohs(peer_addr.sin_port);
+
+    // Добавление нового клиента
+    pthread_mutex_lock(&clients_mutex);
+    active_clients++;
+    for (int i = 0; i < active_clients; i++) {
+        if (clients[i] == 0) {
+            clients[i] = sock;
+            printf("[SERVER] --> Client connected(%d): %s:%d\n", active_clients, client_ip, client_port);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
 
     while (1) { // Бесконечный цикл чтения
         memset(buffer, 0, BUF_SIZE); // Очистите буфер перед каждым чтением
-        printf("[CLIENT] before read");
         int read_val = read(sock, buffer, BUF_SIZE);
-
-        printf("[CLIENT] after read");
 
         if (read_val > 0) {
             // Разделение сообщения на токены
@@ -195,14 +176,15 @@ void *handle_client(void *arg) {
                 if (ptr != NULL) {
                     num_threads = atoi(ptr); // Преобразование строки в число
 
-                    printf("[CLIENT] --> Client %s create threads: %d\n", strcmp(token, "Reader") ==0 ? "Reader" : "Writer", num_threads);
+                    printf("[CLIENT][%s:%d] --> Client %s create threads: %d\n", client_ip, client_port, strcmp(token, "Reader") ==0 ? "Reader" : "Writer", num_threads);
 
                     struct thread_data *data;
                     pthread_t threads[num_threads];
+                    pthread_mutex_lock(&client_count_mutex);
                     for (int i = 0; i < num_threads; i++) {
                         data = malloc(sizeof(struct thread_data)); // Выделяем память для данных потока
-                        data->sock = sock;
-                        data->index = i;
+                        data->index = client_count;
+                        client_count++;
                         // data->active = &active;
                         if (strcmp(token, "Reader") == 0) {
                             // Создание потоков читателей
@@ -212,29 +194,35 @@ void *handle_client(void *arg) {
                             pthread_create(&threads[i], NULL, writer_thread, (void *)data);
                         }
                     }
+                    pthread_mutex_unlock(&client_count_mutex);
 
                     // usleep(100000);
                     // active = 0;
-                    for (int i = 0; i < num_threads; i++) {
-                        pthread_join(threads[i], NULL);
-                    }
+                    // for (int i = 0; i < num_threads; i++) {
+                    //     pthread_join(threads[i], NULL);
+                    // }
 
                     // Отправляем подтверждение клиенту
                     // char *message = "Threads created successfully";
                     // send(sock, message, strlen(message), 0);
                 }
             }
-            printf("end...");
         } else {
-            if (read_val == 0) {
-                printf("Client disconnected\n");
-            } else {
-                perror("recv failed");
-            }
-            active = 0; // Установите флаг, чтобы выйти из цикла
+            break;
         }
     }
 
+    // Удаление клиента при отключении
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < active_clients; i++) {
+        if (clients[i] == sock) {
+            clients[i] = 0;
+            printf("[SERVER] --> Client disconnected(%d): %s:%d\n", i + 1, client_ip, client_port);
+            active_clients--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
     close(sock);
     return NULL;
 }
@@ -242,7 +230,6 @@ void *handle_client(void *arg) {
 
 void *reader_thread(void *arg) {
     struct thread_data *data = (struct thread_data *)arg;
-    int sock = data->sock;
     int index = data->index;
 
     while (1) {
@@ -266,11 +253,13 @@ void *reader_thread(void *arg) {
         // Чтение
         printf(inMessage, (intptr_t)index);
         snprintf(stats_message, sizeof(stats_message), inMessage, (intptr_t)index);
-        send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        broadcast_message(stats_message);
+        // send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
         usleep(rand() % 1000000);
         printf(outMessage, (intptr_t)index);
         snprintf(stats_message, sizeof(stats_message), outMessage, (intptr_t)index);
-        send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        // send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        broadcast_message(stats_message);
 
         pthread_mutex_lock(&read_mutex);
         num_readers--;
@@ -294,7 +283,6 @@ void *reader_thread(void *arg) {
 
 void *writer_thread(void *arg) {
     struct thread_data *data = (struct thread_data *)arg;
-    int sock = data->sock;
     int index = data->index;
 
     while (1) {
@@ -314,11 +302,13 @@ void *writer_thread(void *arg) {
         // Запись
         printf(inMessage, (intptr_t)index);
         snprintf(stats_message, sizeof(stats_message), inMessage, (intptr_t)index);
-        send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        // send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        broadcast_message(stats_message);
         usleep(rand() % 3000000);
         printf(outMessage, (intptr_t)index);
         snprintf(stats_message, sizeof(stats_message), outMessage, (intptr_t)index);
-        send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        // send(sock, stats_message, strlen(stats_message), 0); // Отправляем сообщение клиенту
+        broadcast_message(stats_message);
         pthread_mutex_unlock(&write_mutex);
 
         pthread_mutex_lock(&priority_mutex);

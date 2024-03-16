@@ -3,8 +3,7 @@ project(ClientServerApp)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_executable(ClientServerApp src/client_reader.c
+add_executable(ClientServerApp src/client.c
         src/server.c
-        src/client_writer.c
         src/server.h
 )
