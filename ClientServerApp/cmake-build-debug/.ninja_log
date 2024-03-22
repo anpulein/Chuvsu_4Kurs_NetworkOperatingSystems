@@ -1,6 +1,0 @@
-# ninja log v5
-62	106	1709653136607026978	ClientServerApp	2461422219c26586
-9	76	1709984867920408821	CMakeFiles/ClientServerApp.dir/src/client_writer.c.o	5a1e166293f60d23
-9	80	1709984867924946641	CMakeFiles/ClientServerApp.dir/src/server.c.o	8a60fb7b11c2955e
-8	76	1709984867920608156	CMakeFiles/ClientServerApp.dir/src/client_reader.c.o	2d7a32a036ed6aff
-0	56	1710521913689027925	build.ninja	6fd95c872df17be3
